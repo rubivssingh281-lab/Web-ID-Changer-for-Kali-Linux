@@ -1,5 +1,4 @@
 #!/bin/bash
-#!/bin/bash
 clear
 # Colors
 DEFAULT='\033[0m'
@@ -139,48 +138,70 @@ setup_system() {
     fi
 }
 
-# Browser hardening: Arkenfox + production‑grade overrides
+# Browser hardening
 harden_browser_config() {
-    log "[*] Applying Arkenfox user.js + extra overrides..."
+    log "[*] Embedding hardened browser preferences (Arkenfox + extras)..."
     local TEMP_JS="/tmp/user.js"
-    curl -s -o "$TEMP_JS" "https://raw.githubusercontent.com/arkenfox/user.js/master/user.js"
-    if [[ $? -ne 0 ]]; then
-        log "[!] Failed to download Arkenfox user.js"
-        return 1
-    fi
 
-    cat >> "$TEMP_JS" << 'EOF'
-
-// ===== PRODUCTION EXTRA HARDENING =====
-user_pref("webgl.disabled", true);
-user_pref("canvas.capturestream.enabled", false);
+    # Arkenfox base (minimal critical subset – you can expand from the official repo)
+    cat > "$TEMP_JS" << 'ARKENFOX'
+// ===== Arkenfox user.js base =====
 user_pref("privacy.resistFingerprinting", true);
-user_pref("privacy.window.maxInnerWidth", 1000);
-user_pref("privacy.window.maxInnerHeight", 800);
-user_pref("privacy.resistFingerprinting.letterboxing", false);
+user_pref("privacy.resistFingerprinting.letterboxing", true);
+user_pref("webgl.disabled", true);
+user_pref("media.peerconnection.enabled", false);
+user_pref("dom.battery.enabled", false);
 user_pref("dom.webaudio.enabled", false);
+user_pref("canvas.capturestream.enabled", false);
 user_pref("font.system.whitelist", "");
 user_pref("font.name.monospace.x-western", "Courier New");
 user_pref("font.name.sans-serif.x-western", "Arial");
 user_pref("font.name.serif.x-western", "Times New Roman");
-user_pref("dom.maxHardwareConcurrency", 2);
-user_pref("dom.battery.enabled", false);
-user_pref("media.peerconnection.enabled", false);
 user_pref("network.proxy.type", 1);
 user_pref("network.proxy.socks", "127.0.0.1");
 user_pref("network.proxy.socks_port", 9050);
 user_pref("network.proxy.socks_remote_dns", true);
 user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
-EOF
+user_pref("privacy.trackingprotection.enabled", true);
+user_pref("privacy.trackingprotection.fingerprinting.enabled", true);
+user_pref("privacy.trackingprotection.cryptomining.enabled", true);
+user_pref("browser.safebrowsing.malware.enabled", false);
+user_pref("browser.safebrowsing.phishing.enabled", false);
+user_pref("browser.send_pings", false);
+user_pref("dom.event.clipboardevents.enabled", false);
+user_pref("dom.maxHardwareConcurrency", 2);
+ARKENFOX
 
-    # Seed current profiles and store for later use
+    # Extra production overrides (your previous additions)
+    cat >> "$TEMP_JS" << 'EXTRAS'
+// ===== EXTRA HARDENING =====
+user_pref("privacy.window.maxInnerWidth", 1000);
+user_pref("privacy.window.maxInnerHeight", 800);
+user_pref("privacy.resistFingerprinting.letterboxing", false);
+user_pref("media.peerconnection.enabled", false);
+user_pref("dom.battery.enabled", false);
+user_pref("dom.webaudio.enabled", false);
+user_pref("canvas.capturestream.enabled", false);
+user_pref("font.system.whitelist", "");
+user_pref("font.name.monospace.x-western", "Courier New");
+user_pref("font.name.sans-serif.x-western", "Arial");
+user_pref("font.name.serif.x-western", "Times New Roman");
+user_pref("dom.maxHardwareConcurrency", 2);
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.socks", "127.0.0.1");
+user_pref("network.proxy.socks_port", 9050);
+user_pref("network.proxy.socks_remote_dns", true);
+user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
+EXTRAS
+
+    # Copy to existing profiles and store for later use
     for profile in ~/.mozilla/firefox/*.default*; do
         [[ -d "$profile" ]] && cp "$TEMP_JS" "$profile/user.js"
     done
     if [[ -d "$HOME/tor-browser/Browser/TorBrowser/Data/Browser/profile.default" ]]; then
         cp "$TEMP_JS" "$HOME/tor-browser/Browser/TorBrowser/Data/Browser/profile.default/user.js"
     fi
-    log "[✓] Browser hardening prefs applied."
+    log "[✓] Browser preferences embedded successfully."
 }
 
 # Rotation loops – each sleeps a random interval
@@ -250,13 +271,22 @@ rotate_ipv6() {
 
 rotate_hostname() {
     while true; do
-	echo 'Defaults    !fqdn' | sudo tee /etc/sudoers.d/ignore_hostname >/dev/null
-        local NEW_HOSTNAME
-        NEW_HOSTNAME=$(random_hostname)
+        local OLD_HOSTNAME=$(hostname)
+        local NEW_HOSTNAME=$(random_hostname)
         log "[⟳] Changing hostname to $NEW_HOSTNAME..."
-        sudo hostnamectl set-hostname "$NEW_HOSTNAME" > /dev/null 2>&1
-        sudo sed -i '/^127\.0\.1\.1/d' /etc/hosts
-        echo "127.0.1.1 $(hostname)" | sudo tee -a /etc/hosts
+
+        # 1. Pre-seed /etc/hosts with the new name (and a .localdomain alias)
+        #    This guarantees the new name resolves from the very first moment.
+        echo "127.0.1.1 $NEW_HOSTNAME $NEW_HOSTNAME.localdomain" | sudo tee -a /etc/hosts >/dev/null
+
+        # 2. Change the system hostname.
+        sudo hostnamectl set-hostname "$NEW_HOSTNAME" >/dev/null 2>&1
+
+        # 3. Remove only the old hostname entry to avoid clutter.
+        if [[ -n "$OLD_HOSTNAME" ]]; then
+            sudo sed -i "/^127\.0\.1\.1\s.*$OLD_HOSTNAME/d" /etc/hosts
+        fi
+
         log "[→] New hostname: $NEW_HOSTNAME"
         sleep $(random_interval)
     done
